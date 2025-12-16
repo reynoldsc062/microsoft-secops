@@ -1,3 +1,4 @@
+```
 AlertInfo
 | where TimeGenerated > ago(1h)
 | where Title == "Email reported by user as malware or phish"
@@ -46,3 +47,4 @@ AlertInfo
     AllRecipients,
     TotalRecipients,
     AlertIds
+```
