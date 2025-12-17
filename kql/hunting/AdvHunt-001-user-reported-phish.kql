@@ -1,48 +1,56 @@
+name: User-reported phishing email blast-radius and recipient scoping
+description: |
+  Correlates Outlook user-reported phishing/malware alerts with message
+  delivery data to identify all recipients of the same email, even if
+  they did not report it. Produces a message-level view showing the
+  reporting user(s), total recipient count, and an exact mailbox list
+  to support rapid scoping and remediation.
+requiredDataConnectors:
+  - connectorId: MicrosoftDefenderForOffice365
+    dataTypes:
+      - AlertInfo
+      - AlertEvidence
+      - EmailEvents
+tactics:
+  - InitialAccess
+  - Discovery
+  - Collection
+
+query: |
+
+let ReportLookback = 4h;
+let DeliveryLookback = 7d;
 AlertInfo
-| where TimeGenerated > ago(1h)
+| where TimeGenerated > ago(ReportLookback)
 | where Title == "Email reported by user as malware or phish"
 | join kind=inner (
     AlertEvidence
-    | where TimeGenerated > ago(1h)
+    | where TimeGenerated > ago(ReportLookback)
     | where EntityType == "MailMessage"
     | extend af = parse_json(AdditionalFields)
-    | extend
-        Sender   = tostring(af.Sender),
-        Reporter = tostring(af.Recipient)
-    | project
-        AlertId,
-        AlertTime = TimeGenerated,
-        NetworkMessageId,
-        Sender,
-        Reporter,
-        EmailSubject
+    | extend Sender=tostring(af.Sender), Reporter=tostring(af.Recipient)
+    | project AlertId, AlertTime=TimeGenerated, NetworkMessageId, Sender, Reporter, EmailSubject
 ) on AlertId
 | join kind=inner (
     EmailEvents
-    | where Timestamp > ago(1h)
-    | project
-        DeliveryTime = Timestamp,
-        NetworkMessageId,
-        RecipientEmailAddress,
-        ReportId
+    | where Timestamp > ago(DeliveryLookback)
+    | project DeliveryTime=Timestamp, NetworkMessageId, RecipientEmailAddress, ReportId
 ) on NetworkMessageId
 | summarize
-    Timestamp       = max(DeliveryTime),
-    ReportId        = any(ReportId),
-    Sender          = any(Sender),
-    EmailSubject    = any(EmailSubject),
-    Reporter        = make_set(Reporter),
-    AllRecipients   = make_set(RecipientEmailAddress),
-    TotalRecipients = dcount(RecipientEmailAddress),
-    AlertIds        = make_set(AlertId)
+    Timestamp        = max(AlertTime),
+    ReportId         = take_any(ReportId),
+    PrimaryAlertId   = take_any(AlertId),
+    Sender           = take_any(Sender),
+    EmailSubject     = take_any(EmailSubject),
+    ReporterSet      = make_set(Reporter),
+    AllRecipients    = make_set(RecipientEmailAddress),
+    TotalRecipients  = dcount(RecipientEmailAddress)
   by NetworkMessageId
-| project
-    Timestamp,
-    ReportId,
-    NetworkMessageId,
-    Sender,
-    EmailSubject,
-    Reporter,
-    AllRecipients,
-    TotalRecipients,
-    AlertIds
+// make arrays deterministic + produce stable scalar strings for Custom details
+| extend ReporterSet = array_sort_asc(ReporterSet)
+| extend AllRecipients = array_sort_asc(AllRecipients)
+| extend ReportingUser = tostring(ReporterSet[0])
+| extend ReporterCsv = strcat_array(ReporterSet, ";")
+| extend AllRecipientsCsv = strcat_array(AllRecipients, ";")
+| where isnotempty(ReportingUser) and isnotempty(ReportId) and isnotempty(PrimaryAlertId)
+| where TotalRecipients > 1
