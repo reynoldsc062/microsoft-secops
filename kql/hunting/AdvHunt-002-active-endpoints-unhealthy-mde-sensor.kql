@@ -1,0 +1,30 @@
+name: Identify active endpoints with unhealthy Defender sensor
+description: |
+  Find endpoints where Microsoft Defender for Endpoint sensor health
+  is degraded (Inactive or No sensor data) *and* there has been recent
+  device logon activity within the last 7 days. This highlights devices
+  being actively used that lack reliable EDR telemetry (visibility gap).
+requiredDataConnectors:
+  - connectorId: MicrosoftDefenderForEndpoint
+    dataTypes:
+      - DeviceInfo
+      - DeviceLogonEvents
+tactics:
+  - Reconnaissance
+  - Discovery
+  - Visibility
+
+query: |
+
+let ActiveLookback = 7d;
+DeviceInfo
+| summarize arg_max(Timestamp, DeviceName, OSPlatform, OSVersion, SensorHealthState, OnboardingStatus, MachineGroup, IsInternetFacing) by DeviceId
+| where SensorHealthState in~ ("Inactive", "No sensor data")
+| project DeviceId, DeviceName, OSPlatform, OSVersion, SensorHealthState, OnboardingStatus, MachineGroup, IsInternetFacing, DeviceInfoTime=Timestamp
+| join kind=inner (
+    DeviceLogonEvents
+    | where Timestamp > ago(ActiveLookback)
+    | summarize LastLogonTime=max(Timestamp) by DeviceId
+) on DeviceId
+| project LastLogonTime, DeviceName, DeviceId, SensorHealthState, OnboardingStatus, IsInternetFacing, MachineGroup, OSPlatform, OSVersion, DeviceInfoTime
+| order by LastLogonTime desc
